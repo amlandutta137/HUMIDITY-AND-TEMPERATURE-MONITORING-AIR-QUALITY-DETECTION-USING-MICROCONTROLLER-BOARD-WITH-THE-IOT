@@ -1,0 +1,206 @@
+//=====================================DECLARING LIBRARIES========================================
+//================================================================================================
+#include <Wire.h>
+#include <DHT.h>
+#include <DHT_U.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "time.h"
+
+const char * ssid = "Galaxy A31CD58";
+const char * password = "moed2565";
+
+//==================================GOOGLE SHEET CREDENTIALS========================================
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 19800;
+const int   daylightOffset_sec = 0;
+// Google script ID and required credentials
+String GOOGLE_SCRIPT_ID = "AKfycbxnKrR4l4rW7vvwFmhXQ7OW6Ddq0U6mjd8CKeHHV2tNHhXCGsv4SKVy5BqIFylMPrke";
+
+//===================================================================================================
+
+//=====================================DEFINING MQ SENSOR PINS====================================
+//================================================================================================
+#define MQ7_pin     32       //used for measuring CO (carbon monoxide) and hydrogen (in traces)
+#define MQ8_pin     33       //used for detecting H2 (Hydrogen)
+#define MQ135_pin   35       //used for detecting CO2 (carbon dioxide) and Ethanol (alcohol detection)
+
+//required for detecting the safe limit (digital pin initialise)
+//----------------------------------------------------------------
+#define mq7_dig     26
+#define mq8_dig     25
+#define mq135_dig   27
+
+//==============================DEFINING SENSOR HEAT RESISTANCE FOR MQ SENSORS====================
+//the value of resistance is in Kilo Ohms=========================================================
+//================================================================================================
+
+#define MQ7_RL      10.0      //10 kilo-ohms
+#define MQ8_RL      10.0      //10 kilo-ohms
+#define MQ135_RL    20.0      //20 kilo-ohms
+
+//==============================DEFINING VARIABLES FOR MQ SENSORS=================================
+//================================================================================================
+//callibrated resistance (R0) will be placed automatically after callibration is done
+//-----------------------------------------------------------------------------------      
+float mq7_res0    = 0.735;       
+  float mq8_res0  = 0.935;
+float mq135_res0  = 0.942;
+
+//sensor heater resistance (Rs) will be calculated from analogread
+//----------------------------------------------------------------           
+int mq7_RS        = 0;
+int mq8_RS        = 0;
+int mq135_RS      = 0;
+
+//required for calculating the ratio (mq4_RS / mq4_res0)
+//----------------------------------------------------------------
+float mq7_ratio     = 0.0;
+float mq8_ratio     = 0.0;
+float mq135_ratio   = 0.0;
+
+//required for calculating the final PPM values
+//----------------------------------------------------------------
+float mq7_ppm     = 0.0;
+float mq8_ppm     = 0.0;
+float mq135_ppm   = 0.0;
+
+//===================================DEFINING DHT11 functions ====================================
+//================================================================================================
+#define DHT11_pin     15        //used for detecting temperature and humidity
+DHT dht(DHT11_pin, DHT11);
+
+//=================================DEFINING variables for DHT11===================================
+//================================================================================================
+float temp = 0.0;
+float humid = 0.0;
+float heatIndex = 0.0;
+
+//================================================================================================
+
+void updatedisplay()
+{
+  //===================================PRINTING STATEMETNS===================================
+   Serial.print("\nMQ7 = ");
+   Serial.print(mq7_ppm);
+   Serial.println(" ppm");
+   Serial.print("MQ8 = ");
+   Serial.print(mq8_ppm);
+   Serial.println(" ppm");
+   Serial.print("MQ135 = ");
+   Serial.print(mq135_ppm);
+   Serial.println(" ppm");
+   Serial.print("Temperature =");
+   Serial.print(temp);
+   Serial.println("*C");
+   Serial.print("Relative Temperature =");
+   Serial.print(heatIndex);
+   Serial.println("*C");
+   Serial.print("Humidity =");
+   Serial.print(humid);
+   Serial.println("%");
+   Serial.println("////////////////////////////////////////////////////////////////////////////////////");
+   //=============================================================================================
+}
+
+void setup() 
+{
+  Serial.begin(115200);       //setting up the baud rate
+  dht.begin();                //initializing the DHT11 sensor
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  Serial.println("Started");
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) 
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  // Init and get the time
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  Serial.flush();
+  //--------------------------------------------------------------------------------------------------
+}
+
+void loop() 
+{
+   //========================DECLARING FUNCTIONS AND INPUTS FOR MQ SENSORS========================
+   //=============================================================================================
+   mq7_RS     = analogRead(MQ7_pin);
+   mq8_RS     = analogRead(MQ8_pin);
+   mq135_RS   = analogRead(MQ135_pin);
+
+   int read_mq7   = digitalRead(mq7_dig);
+   int read_mq8   = digitalRead(mq8_dig);
+   int read_mq135 = digitalRead(mq135_dig);
+
+   mq7_ratio    = mq7_RS / mq7_res0;
+   mq8_ratio    = mq8_RS / mq8_res0;
+   mq135_ratio  = mq135_RS / mq135_res0;
+
+   mq7_ppm   = 1000.0 * pow(10.0, ((log10(mq7_ratio) - 0.3315) / (-0.4443)));
+   mq8_ppm   = 1000.0 * pow(10.0, ((log10(mq8_ratio) - 0.3516) / (-0.3943)));
+   mq135_ppm = 1000.0 * pow(10.0, ((log10(mq135_ratio) - 0.2796) / (-0.3389)));
+
+   //=============================================================================================
+   //========================DECLARING FUNCTIONS AND INPUTS FOR DHT SENSORS=======================
+   //=============================================================================================
+   // Reading temperature or humidity takes about 250 milliseconds!
+   // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+   humid = dht.readHumidity();
+   // Read temperature as Celsius (the default)
+   temp = dht.readTemperature();
+  
+   // Compute heat index in Celsius (isFahreheit = false)
+   heatIndex = dht.computeHeatIndex(temp, humid, false);
+   
+   //=============================================================================================
+   //===================================================================================================
+  if (WiFi.status() == WL_CONNECTED) 
+  {
+    static bool flag = false;
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) 
+    {
+      Serial.println("Failed to obtain time");
+      return;
+    }
+
+    String temp_val = String(temp);
+    String hum_val = String(humid);
+    String heatI= String(heatIndex);
+    String mq7 = String(mq7_ppm);
+    String mq8 = String(mq8_ppm);
+    String mq135 = String(mq135_ppm);
+    
+    String urlFinal = "https://script.google.com/macros/s/"+GOOGLE_SCRIPT_ID+"/exec?temp=" + temp_val + "&humid=" + hum_val + "&heati=" + heatI + 
+    "&mq7=" + mq7 + "&mq8=" + mq8 + "&mq135=" + mq135;
+    Serial.println("POST data to spreadsheet:");
+    
+    //Serial.println(urlFinal);
+    HTTPClient http;
+    http.begin(urlFinal.c_str());
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    int httpCode = http.GET(); 
+    Serial.print("HTTP Status Code: ");
+    Serial.println(httpCode);
+    //---------------------------------------------------------------------
+    //getting response from google sheet
+    String payload;
+    if (httpCode > 0) 
+    {
+        payload = http.getString();
+        Serial.println("Payload: "+payload);    
+    }
+    //---------------------------------------------------------------------
+    http.end();
+    unsigned long currentMillis = millis();
+    Serial.println(currentMillis);
+  }
+  updatedisplay();
+//  delay(1000); //main delay of the code
+   
+}
